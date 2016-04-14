@@ -7,6 +7,7 @@ License: Simplified-BSD
 from __future__ import division, absolute_import, print_function
 
 import numpy as np
+import pandas as pd
 from scipy.linalg import solve_sylvester
 from statsmodels.tools.data import _is_using_pandas
 from . import _statespace
@@ -1411,3 +1412,28 @@ def validate_vector_shape(name, shape, nrows, nobs):
         raise ValueError('Invalid dimensions for time-varying %s'
                          ' vector. Requires shape (*,%d), got %s' %
                          (name, nobs, str(shape)))
+
+
+def fourier(x, period, k, name='Season'):
+    names = [
+        ''.join([name, '(', str(period), ', ', str(k), ')[C_', str(i), ']']) for i in range(k)
+    ] + [
+        ''.join([name, '(', str(period), ', ', str(k), ')[S_', str(j), ']']) for j in range(k)
+    ]
+    if _is_using_pandas(x, None):
+        date = x.index
+    else:
+        date = None
+    x = np.asarray(x, float)
+    sample = x.shape[0]
+    k = int(k)
+    t = np.arange(1, sample + 1)
+    c = 2 * np.pi * t * np.arange(1, k + 1, dtype=np.int32).reshape(k, 1) / period
+    X = np.column_stack([np.cos(c).T, np.sin(c).T])
+    exog = pd.DataFrame(
+        X,
+        columns=names
+    )
+    if date is not None:
+        exog.index = date
+    return exog
