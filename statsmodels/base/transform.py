@@ -60,7 +60,7 @@ class BoxCox(object):
                                      **kwargs)
 
         # if less than 0.01, treat lambda as zero.
-        if np.abs(lmbda) < 10e-3:
+        if np.isclose(lmbda, 0.):
             y = np.log(x)
         else:
             y = (np.power(x, lmbda) - 1.) / lmbda
