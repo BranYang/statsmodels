@@ -5,24 +5,23 @@ Author: Chad Fulton
 License: Simplified-BSD
 """
 from __future__ import division, absolute_import, print_function
+from statsmodels.compat.python import long
 
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
 from .kalman_smoother import KalmanSmoother, SmootherResults
-from .kalman_filter import (
-    KalmanFilter, FilterResults, PredictionResults, INVERT_UNIVARIATE, SOLVE_LU
-)
+from .kalman_filter import (KalmanFilter, FilterResults, INVERT_UNIVARIATE,
+                            SOLVE_LU)
 import statsmodels.tsa.base.tsa_model as tsbase
 import statsmodels.base.wrapper as wrap
-from statsmodels.tools.numdiff import (
-    _get_epsilon, approx_hess_cs, approx_fprime_cs, approx_fprime
-)
+from statsmodels.tools.numdiff import (_get_epsilon, approx_hess_cs,
+                                       approx_fprime_cs, approx_fprime)
 from statsmodels.tools.decorators import cache_readonly, resettable_cache
 from statsmodels.tools.eval_measures import aic, bic, hqic
-from statsmodels.tools.tools import pinv_extended
-from statsmodels.tools.tools import Bunch
+from statsmodels.tools.tools import pinv_extended, Bunch
+from statsmodels.tools.sm_exceptions import PrecisionWarning
 import statsmodels.genmod._prediction as pred
 from statsmodels.genmod.families.links import identity
 import warnings
@@ -399,7 +398,6 @@ class MLEModel(tsbase.TimeSeriesModel):
         --------
         statsmodels.base.model.LikelihoodModel.fit
         MLEResults
-
         """
         if start_params is None:
             start_params = self.start_params
@@ -1234,7 +1232,7 @@ class MLEModel(tsbase.TimeSeriesModel):
 
         warnings.warn('Calculation of the Hessian using finite differences'
                       ' is usually subject to substantial approximation'
-                      ' errors.')
+                      ' errors.', PrecisionWarning)
 
         if not approx_centered:
             epsilon = _get_epsilon(params, 3, None, len(params))
@@ -1390,7 +1388,7 @@ class MLEModel(tsbase.TimeSeriesModel):
 
     def simulate(self, params, nsimulations, measurement_shocks=None,
                  state_shocks=None, initial_state=None):
-        """
+        r"""
         Simulate a new time series following the state space model
 
         Parameters
@@ -1659,6 +1657,11 @@ class MLEResults(tsbase.TimeSeriesModelResults):
             res._rank = 0
             res.cov_kwds['description'] = (
                 'No parameters estimated.')
+        elif cov_type == 'custom':
+            res.cov_type = kwargs['custom_cov_type']
+            res.cov_params_default = kwargs['custom_cov_params']
+            res.cov_kwds['description'] = kwargs['custom_description']
+            res._rank = np.linalg.matrix_rank(res.cov_params_default)
         elif cov_type == 'none':
             res.cov_params_default = np.zeros((k_params, k_params)) * np.nan
             res._rank = np.nan
@@ -2168,7 +2171,7 @@ class MLEResults(tsbase.TimeSeriesModelResults):
             `(k_endog, 2, lags)`. If the method is called as
             `ljungbox = res.test_serial_correlation()`, then `ljungbox[i]`
             holds the results of the Ljung-Box test (as would be returned by
-            `statsmodels.stats.diagnostic.acorr_ljungbox`) for the `i`th
+            `statsmodels.stats.diagnostic.acorr_ljungbox`) for the `i` th
             endogenous variable.
 
         Notes
@@ -2303,7 +2306,7 @@ class MLEResults(tsbase.TimeSeriesModelResults):
         forecast : array
             Array of out of sample forecasts. A (steps x k_endog) array.
         """
-        if isinstance(steps, int):
+        if isinstance(steps, (int, long)):
             end = self.nobs+steps-1
         else:
             end = steps
@@ -2368,7 +2371,7 @@ class MLEResults(tsbase.TimeSeriesModelResults):
         forecast : array
             Array of out of sample forecasts. A (steps x k_endog) array.
         """
-        if isinstance(steps, int):
+        if isinstance(steps, (int, long)):
             end = self.nobs+steps-1
         else:
             end = steps
@@ -2376,7 +2379,7 @@ class MLEResults(tsbase.TimeSeriesModelResults):
 
     def simulate(self, nsimulations, measurement_shocks=None,
                  state_shocks=None, initial_state=None):
-        """
+        r"""
         Simulate a new time series following the state space model
 
         Parameters

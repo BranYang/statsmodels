@@ -1,14 +1,12 @@
 """
 Miscellaneous utility code for VAR estimation
 """
-from statsmodels.compat.python import range, string_types, asbytes
+from statsmodels.compat.python import range, string_types, asbytes, long
 import numpy as np
 import scipy.stats as stats
-import scipy.linalg as L
 import scipy.linalg.decomp as decomp
 
 import statsmodels.tsa.tsatools as tsa
-from scipy.linalg import cholesky
 
 #-------------------------------------------------------------------------------
 # Auxiliary functions for estimation
@@ -188,9 +186,8 @@ def varsim(coefs, intercept, sig_u, steps=100, initvalues=None, seed=None):
     Simulate simple VAR(p) process with known coefficients, intercept, white
     noise covariance, etc.
     """
-    if seed is not None:
-        np.random.seed(seed=seed)
-    from numpy.random import multivariate_normal as rmvnorm
+    rs = np.random.RandomState(seed=seed)
+    rmvnorm = rs.multivariate_normal
     p, k, k = coefs.shape
     ugen = rmvnorm(np.zeros(len(sig_u)), sig_u, steps)
     result = np.zeros((steps, k))
@@ -208,7 +205,7 @@ def get_index(lst, name):
     try:
         result = lst.index(name)
     except Exception:
-        if not isinstance(name, int):
+        if not isinstance(name, (int, long)):
             raise
         result = name
     return result

@@ -7,21 +7,14 @@ Author: Josef Perktold
 """
 from __future__ import print_function
 from statsmodels.compat.python import iterkeys, cPickle, BytesIO
+
+import warnings
+
 import numpy as np
-import statsmodels.api as sm
+from numpy.testing import assert_, assert_equal
 import pandas as pd
 
-from numpy.testing import assert_
-
-from nose import SkipTest
-import platform
-
-
-iswin = platform.system() == 'Windows'
-npversion = np.__version__.split('.')
-npversionless15 = not ((int(npversion[0]) > 1) or
-                       (int(npversion[0]) == 1 and (int(npversion[1]) >= 5)))
-winoldnp = iswin & npversionless15
+import statsmodels.api as sm
 
 
 def check_pickle(obj):
@@ -51,11 +44,11 @@ class RemoveDataPickle(object):
         self.l_max = 20000
 
     def test_remove_data_pickle(self):
-        if winoldnp:
-            raise SkipTest
+        import pandas as pd
+        from pandas.util.testing import assert_series_equal
+
         results = self.results
         xf = self.xf
-
         pred_kwds = self.predict_kwds
         pred1 = results.predict(xf, **pred_kwds)
         #create some cached attributes
@@ -70,9 +63,17 @@ class RemoveDataPickle(object):
         res, l = check_pickle(results._results)
 
         #remove data arrays, check predict still works
-        results.remove_data()
+        with warnings.catch_warnings(record=True) as w:
+            results.remove_data()
+
         pred2 = results.predict(xf, **pred_kwds)
-        np.testing.assert_equal(pred2, pred1)
+
+        if isinstance(pred1, pd.Series) and isinstance(pred2, pd.Series):
+            assert_series_equal(pred1, pred2)
+        elif isinstance(pred1, pd.DataFrame) and isinstance(pred2, pd.DataFrame):
+            assert_(pred1.equals(pred2))
+        else:
+            np.testing.assert_equal(pred2, pred1)
 
         #pickle, unpickle reduced array
         res, l = check_pickle(results._results)
@@ -84,9 +85,14 @@ class RemoveDataPickle(object):
         l_max = self.l_max
         assert_(l < l_max, msg='pickle length not %d < %d' % (l, l_max))
 
-
         pred3 = results.predict(xf, **pred_kwds)
-        np.testing.assert_equal(pred3, pred1)
+
+        if isinstance(pred1, pd.Series) and isinstance(pred3, pd.Series):
+            assert_series_equal(pred1, pred3)
+        elif isinstance(pred1, pd.DataFrame) and isinstance(pred3, pd.DataFrame):
+            assert_(pred1.equals(pred3))
+        else:
+            np.testing.assert_equal(pred3, pred1)
 
     def test_remove_data_docstring(self):
         assert_(self.results.remove_data.__doc__ is not None)

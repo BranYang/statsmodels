@@ -7,11 +7,12 @@ from statsmodels.tsa.base.datetools import dates_from_range
 import numpy as np
 from numpy.testing import (assert_almost_equal, assert_equal, assert_warns,
                            assert_raises, dec, assert_)
-from numpy import genfromtxt#, concatenate
+from numpy import genfromtxt
 from statsmodels.datasets import macrodata, sunspots
 from pandas import Series, Index, DataFrame
 import os
-
+import warnings
+from statsmodels.tools.sm_exceptions import MissingDataError
 
 DECIMAL_8 = 8
 DECIMAL_6 = 6
@@ -107,6 +108,11 @@ class TestADFNoConstant2(CheckADF):
         self.pvalue = 0.013747 # Stata does not return a p-value for noconstant
                                # this value is just taken from our results
         self.critvalues = [-2.587,-1.950,-1.617]
+        _, _1, _2, self.store = adfuller(self.y, regression="nc", autolag=None,
+                                         maxlag=1, store=True)
+
+    def test_store_str(self):
+        assert_equal(self.store.__str__(), 'Augmented Dickey-Fuller Test Results')
 
 class CheckCorrGram(object):
     """
@@ -151,9 +157,7 @@ class TestACF(CheckCorrGram):
 
 
 class TestACF_FFT(CheckCorrGram):
-    """
-    Test Autocorrelation Function using FFT
-    """
+    # Test Autocorrelation Function using FFT
     def __init__(self):
         self.acf = self.results['acvarfft']
         self.qstat = self.results['Q1']
@@ -165,7 +169,45 @@ class TestACF_FFT(CheckCorrGram):
     def test_qstat(self):
         #todo why is res1/qstat 1 short
         assert_almost_equal(self.res1[1], self.qstat, DECIMAL_3)
+        
+class TestACFMissing(CheckCorrGram):
+    # Test Autocorrelation Function using Missing
+    def __init__(self):
+        self.x = np.concatenate((np.array([np.nan]),self.x))
+        self.acf = self.results['acvar'] # drop and conservative
+        self.qstat = self.results['Q1']
+        self.res_drop = acf(self.x, nlags=40, qstat=True, alpha=.05, 
+                            missing='drop')
+        self.res_conservative = acf(self.x, nlags=40, qstat=True, alpha=.05, 
+                                    missing='conservative')       
+        self.acf_none = np.empty(40) * np.nan # lags 1 to 40 inclusive
+        self.qstat_none = np.empty(40) * np.nan
+        self.res_none = acf(self.x, nlags=40, qstat=True, alpha=.05,
+                        missing='none')
+    
+    def test_raise(self):
+        assert_raises(MissingDataError, acf, self.x, nlags=40, 
+                      qstat=True, alpha=.05, missing='raise')
+                      
+    def test_acf_none(self):
+        assert_almost_equal(self.res_none[0][1:41], self.acf_none, DECIMAL_8)
+    
+    def test_acf_drop(self):
+        assert_almost_equal(self.res_drop[0][1:41], self.acf, DECIMAL_8)
+    
+    def test_acf_conservative(self):
+        assert_almost_equal(self.res_conservative[0][1:41], self.acf, 
+                            DECIMAL_8)
 
+    def test_qstat_none(self):
+        #todo why is res1/qstat 1 short
+        assert_almost_equal(self.res_none[2], self.qstat_none, DECIMAL_3)
+    
+# how to do this test? the correct q_stat depends on whether nobs=len(x) is 
+# used when x contains NaNs or whether nobs<len(x) when x contains NaNs
+#    def test_qstat_drop(self):
+#        assert_almost_equal(self.res_drop[2][:40], self.qstat, DECIMAL_3)
+        
 
 class TestPACF(CheckCorrGram):
     def __init__(self):
@@ -261,43 +303,51 @@ class TestKPSS(SetupKPSS):
     """
 
     def test_fail_nonvector_input(self):
-        kpss(self.x)  # should be fine
+        with warnings.catch_warnings(record=True) as w:
+            kpss(self.x)  # should be fine
 
         x = np.random.rand(20, 2)
         assert_raises(ValueError, kpss, x)
 
     def test_fail_unclear_hypothesis(self):
         # these should be fine,
-        kpss(self.x, 'c')
-        kpss(self.x, 'C')
-        kpss(self.x, 'ct')
-        kpss(self.x, 'CT')
+        with warnings.catch_warnings(record=True) as w:
+            kpss(self.x, 'c')
+            kpss(self.x, 'C')
+            kpss(self.x, 'ct')
+            kpss(self.x, 'CT')
 
         assert_raises(ValueError, kpss, self.x, "unclear hypothesis")
 
     def test_teststat(self):
-        kpss_stat, pval, lags, crits = kpss(self.x, 'c', 3)
+        with warnings.catch_warnings(record=True) as w:
+            kpss_stat, pval, lags, crits = kpss(self.x, 'c', 3)
         assert_almost_equal(kpss_stat, 5.0169, DECIMAL_3)
 
-        kpss_stat, pval, lags, crits = kpss(self.x, 'ct', 3)
+        with warnings.catch_warnings(record=True) as w:
+            kpss_stat, pval, lags, crits = kpss(self.x, 'ct', 3)
         assert_almost_equal(kpss_stat, 1.1828, DECIMAL_3)
 
     def test_pval(self):
-        kpss_stat, pval, lags, crits = kpss(self.x, 'c', 3)
+        with warnings.catch_warnings(record=True) as w:
+            kpss_stat, pval, lags, crits = kpss(self.x, 'c', 3)
         assert_equal(pval, 0.01)
 
-        kpss_stat, pval, lags, crits = kpss(self.x, 'ct', 3)
+        with warnings.catch_warnings(record=True) as w:
+            kpss_stat, pval, lags, crits = kpss(self.x, 'ct', 3)
         assert_equal(pval, 0.01)
 
     def test_store(self):
-        kpss_stat, pval, crit, store = kpss(self.x, 'c', 3, True)
+        with warnings.catch_warnings(record=True) as w:
+            kpss_stat, pval, crit, store = kpss(self.x, 'c', 3, True)
 
         # assert attributes, and make sure they're correct
         assert_equal(store.nobs, len(self.x))
         assert_equal(store.lags, 3)
 
     def test_lags(self):
-        kpss_stat, pval, lags, crits = kpss(self.x, 'c')
+        with warnings.catch_warnings(record=True) as w:
+            kpss_stat, pval, lags, crits = kpss(self.x, 'c')
         assert_equal(lags, int(np.ceil(12. * np.power(len(self.x) / 100., 1 / 4.))))
         # assert_warns(UserWarning, kpss, self.x)
 

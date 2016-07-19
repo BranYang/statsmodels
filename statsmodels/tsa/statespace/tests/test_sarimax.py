@@ -32,6 +32,8 @@ try:
 except ImportError:
     have_matplotlib = False
 
+IS_WINDOWS = os.name == 'nt'
+
 
 class TestSARIMAXStatsmodels(object):
     """
@@ -1058,7 +1060,8 @@ class SARIMAXCoverageTest(object):
         model2 = sarimax.SARIMAX(endog, exog, **kwargs)
         res1 = self.model.filter(self.true_params)
         res2 = model2.filter(self.true_params)
-        assert_allclose(res2.llf, res1.llf, rtol=1e-13)
+        rtol = 1e-6 if IS_WINDOWS else 1e-13
+        assert_allclose(res2.llf, res1.llf, rtol=rtol)
 
 
 class Test_ar(SARIMAXCoverageTest):
@@ -1828,7 +1831,8 @@ def test_simple_time_varying():
         res = mod.fit(disp=-1)
 
     # Test that the estimated variances of the errors are essentially zero
-    assert_almost_equal(res.params, [0,0], 6)
+    # 5 digits necessary to accommodate 32-bit numpy / scipy with OpenBLAS 0.2.18
+    assert_almost_equal(res.params, [0, 0], 5)
 
     # Test that the time-varying coefficients are all 0.5 (except the first
     # one)
@@ -1931,3 +1935,57 @@ def test_results():
 
     assert_almost_equal(res.arparams, [0.5])
     assert_almost_equal(res.maparams, [-0.5])
+
+
+def test_misc_exog():
+    # Tests for missing data
+    nobs = 20
+    k_endog = 1
+    np.random.seed(1208)
+    endog = np.random.normal(size=(nobs, k_endog))
+    endog[:4, 0] = np.nan
+    exog1 = np.random.normal(size=(nobs, 1))
+    exog2 = np.random.normal(size=(nobs, 2))
+
+    index = pd.date_range('1970-01-01', freq='QS', periods=nobs)
+    endog_pd = pd.DataFrame(endog, index=index)
+    exog1_pd = pd.Series(exog1.squeeze(), index=index)
+    exog2_pd = pd.DataFrame(exog2, index=index)
+
+    models = [
+        sarimax.SARIMAX(endog, exog=exog1, order=(1, 1, 0)),
+        sarimax.SARIMAX(endog, exog=exog2, order=(1, 1, 0)),
+        sarimax.SARIMAX(endog, exog=exog2, order=(1, 1, 0),
+                        simple_differencing=False),
+        sarimax.SARIMAX(endog_pd, exog=exog1_pd, order=(1, 1, 0)),
+        sarimax.SARIMAX(endog_pd, exog=exog2_pd, order=(1, 1, 0)),
+        sarimax.SARIMAX(endog_pd, exog=exog2_pd, order=(1, 1, 0),
+                        simple_differencing=False),
+    ]
+
+    for mod in models:
+        # Smoke tests
+        mod.start_params
+        res = mod.fit(disp=False)
+        res.summary()
+        res.predict()
+        res.predict(dynamic=True)
+        res.get_prediction()
+
+        oos_exog = np.random.normal(size=(1, mod.k_exog))
+        res.forecast(steps=1, exog=oos_exog)
+        res.get_forecast(steps=1, exog=oos_exog)
+
+        # Smoke tests for invalid exog
+        oos_exog = np.random.normal(size=(1))
+        assert_raises(ValueError, res.forecast, steps=1, exog=oos_exog)
+
+        oos_exog = np.random.normal(size=(2, mod.k_exog))
+        assert_raises(ValueError, res.forecast, steps=1, exog=oos_exog)
+
+        oos_exog = np.random.normal(size=(1, mod.k_exog + 1))
+        assert_raises(ValueError, res.forecast, steps=1, exog=oos_exog)
+
+    # Test invalid model specifications
+    assert_raises(ValueError, sarimax.SARIMAX, endog, exog=np.zeros((10, 4)),
+                  order=(1, 1, 0))

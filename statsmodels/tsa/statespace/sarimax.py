@@ -5,6 +5,7 @@ Author: Chad Fulton
 License: Simplified-BSD
 """
 from __future__ import division, absolute_import, print_function
+from statsmodels.compat.python import long
 
 from warnings import warn
 
@@ -20,6 +21,7 @@ from statsmodels.tools.tools import Bunch
 from statsmodels.tools.data import _is_using_pandas
 from statsmodels.tsa.tsatools import lagmat
 from statsmodels.tools.decorators import cache_readonly
+from statsmodels.tools.sm_exceptions import ValueWarning
 import statsmodels.base.wrapper as wrap
 
 
@@ -308,18 +310,18 @@ class SARIMAX(MLEModel):
         # Assume that they are given from lowest degree to highest, that all
         # degrees except for the constant are included, and that they are
         # boolean vectors (0 for not included, 1 for included).
-        if isinstance(order[0], int):
+        if isinstance(order[0], (int, long)):
             self.polynomial_ar = np.r_[1., np.ones(order[0])]
         else:
             self.polynomial_ar = np.r_[1., order[0]]
-        if isinstance(order[2], int):
+        if isinstance(order[2], (int, long)):
             self.polynomial_ma = np.r_[1., np.ones(order[2])]
         else:
             self.polynomial_ma = np.r_[1., order[2]]
         # Assume that they are given from lowest degree to highest, that the
         # degrees correspond to (1*s, 2*s, ..., P*s), and that they are
         # boolean vectors (0 for not included, 1 for included).
-        if isinstance(seasonal_order[0], int):
+        if isinstance(seasonal_order[0], (int, long)):
             self.polynomial_seasonal_ar = np.r_[
                 1.,  # constant
                 ([0] * (self.k_seasons - 1) + [1]) * seasonal_order[0]
@@ -332,7 +334,7 @@ class SARIMAX(MLEModel):
                 self.polynomial_seasonal_ar[(i + 1) * self.k_seasons] = (
                     seasonal_order[0][i]
                 )
-        if isinstance(seasonal_order[2], int):
+        if isinstance(seasonal_order[2], (int, long)):
             self.polynomial_seasonal_ma = np.r_[
                 1.,  # constant
                 ([0] * (self.k_seasons - 1) + [1]) * seasonal_order[2]
@@ -417,9 +419,9 @@ class SARIMAX(MLEModel):
                 exog = np.asarray(exog)
 
             # Make sure we have 2-dimensional array
-            if exog.ndim == 1:
+            if exog.ndim < 2:
                 if not exog_is_using_pandas:
-                    exog = exog[:, None]
+                    exog = np.atleast_2d(exog).T
                 else:
                     exog = pd.DataFrame(exog)
 
@@ -546,6 +548,8 @@ class SARIMAX(MLEModel):
         # Perform simple differencing if requested
         if (self.simple_differencing and
            (self.orig_k_diff > 0 or self.orig_k_seasonal_diff > 0)):
+            # Save the original length
+            orig_length = endog.shape[0]
             # Perform simple differencing
             endog = diff(endog.copy(), self.orig_k_diff,
                          self.orig_k_seasonal_diff, self.k_seasons)
@@ -556,6 +560,11 @@ class SARIMAX(MLEModel):
             # Reset the ModelData datasets
             self.data.endog, self.data.exog = (
                 self.data._convert_endog_exog(endog, exog))
+
+            # Reset dates, if provided
+            if self.data.dates is not None:
+                new_length = self.data.endog.shape[0]
+                self.data.dates = self.data.dates[orig_length - new_length:]
 
         # Reset the nobs
         self.nobs = endog.shape[0]
@@ -944,7 +953,7 @@ class SARIMAX(MLEModel):
         # Although the Kalman filter can deal with missing values in endog,
         # conditional sum of squares cannot
         if np.any(np.isnan(endog)):
-            mask = ~np.isnan(endog)
+            mask = ~np.isnan(endog).squeeze()
             endog = endog[mask]
             if exog is not None:
                 exog = exog[mask]
@@ -1817,7 +1826,7 @@ class SARIMAXResults(MLEResults):
         """
         return self._params_ma
 
-    def predict(self, start=None, end=None, exog=None, dynamic=False,
+    def get_prediction(self, start=None, end=None, dynamic=False, exog=None,
                 **kwargs):
         """
         In-sample prediction and out-of-sample forecasting
@@ -1906,35 +1915,11 @@ class SARIMAXResults(MLEResults):
                         kwargs[name] = mat[:, :, -_out_of_sample:]
         elif self.model.k_exog == 0 and exog is not None:
             warn('Exogenous array provided to predict, but additional data not'
-                 ' required. `exog` argument ignored.')
+                 ' required. `exog` argument ignored.', ValueWarning)
 
-        return super(SARIMAXResults, self).predict(
-            start=start, end=end, exog=exog, dynamic=dynamic, **kwargs
+        return super(SARIMAXResults, self).get_prediction(
+            start=start, end=end, dynamic=dynamic, exog=exog, **kwargs
         )
-
-    def forecast(self, steps=1, exog=None, **kwargs):
-        """
-        Out-of-sample forecasts
-
-        Parameters
-        ----------
-        steps : int, optional
-            The number of out of sample forecasts from the end of the
-            sample. Default is 1.
-        exog : array_like, optional
-            If the model includes exogenous regressors, you must provide
-            exactly enough out-of-sample values for the exogenous variables for
-            each step forecasted.
-        **kwargs
-            Additional arguments may required for forecasting beyond the end
-            of the sample. See `FilterResults.predict` for more details.
-
-        Returns
-        -------
-        forecast : array
-            Array of out of sample forecasts.
-        """
-        return super(SARIMAXResults, self).forecast(steps, exog=exog, **kwargs)
 
     def summary(self, alpha=.05, start=None):
         # Create the model name

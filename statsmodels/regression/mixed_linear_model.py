@@ -221,8 +221,10 @@ def _get_exog_re_names(self, exog_re):
         return [exog_re.name]
     elif isinstance(exog_re, list):
         return exog_re
-    return ["Z{0}".format(k + 1) for k in range(exog_re.shape[1])]
 
+    # Default names
+    defnames = ["x_re{0:1d}".format(k + 1) for k in range(exog_re.shape[1])]
+    return defnames
 
 class MixedLMParams(object):
     """
@@ -637,7 +639,10 @@ class MixedLM(base.LikelihoodModel):
             self.k_re2 = 1
             self.exog_re = np.ones((len(endog), 1), dtype=np.float64)
             self.data.exog_re = self.exog_re
-            self.data.param_names = self.exog_names + ['Group RE']
+            names = ['Group RE']
+            self.data.param_names = self.exog_names + names
+            self.data.exog_re_names = names
+            self.data.exog_re_names_full = names
 
         elif exog_re is not None:
             # Process exog_re the same way that exog is handled
@@ -1260,7 +1265,6 @@ class MixedLM(base.LikelihoodModel):
         if len(vc_var) > 0:
             return np.concatenate(vc_var)
         else:
-            1/0
             return np.empty(0)
 
 
@@ -2112,7 +2116,9 @@ class MixedLMResults(base.LikelihoodModelResults, base.ResultMixin):
         for group_ix, group in enumerate(self.model.group_labels):
             ix = self.model.row_indices[group]
 
-            mat = [self.model.exog_re_li[group_ix]]
+            mat = []
+            if self.model.exog_re_li is not None:
+                mat.append(self.model.exog_re_li[group_ix])
             for c in self.model._vc_names:
                 if group in self.model.exog_vc[c]:
                     mat.append(self.model.exog_vc[c][group])

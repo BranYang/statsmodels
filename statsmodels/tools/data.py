@@ -95,7 +95,8 @@ def _is_using_ndarray(endog, exog):
 
 
 def _is_using_pandas(endog, exog):
-    klasses = (pd.Series, pd.DataFrame, pd.WidePanel)
+    # TODO: Remove WidePanel when finished with it
+    klasses = (pd.Series, pd.DataFrame, pd.WidePanel, pd.Panel)
     return (isinstance(endog, klasses) or isinstance(exog, klasses))
 
 
@@ -112,3 +113,10 @@ def _is_using_patsy(endog, exog):
     # we get this when a structured array is passed through a formula
     return (is_design_matrix(endog) and
             (is_design_matrix(exog) or exog is None))
+
+
+def _is_recarray(data):
+    """
+    Returns true if data is a recarray
+    """
+    return isinstance(data, np.core.recarray)

@@ -34,27 +34,15 @@ insufficiently tested.
    :toctree: generated/
 
    tools.categorical
-   tools.ECDF
    tools.clean0
    tools.fullrank
    tools.isestimable
-   tools.monotone_fn_inverter
    tools.rank
    tools.recipr
    tools.recipr0
    tools.unsqueeze
 
 .. currentmodule:: statsmodels.tools
-
-Principal Component Analysis
-""""""""""""""""""""""""""""
-
-.. autosummary::
-   :toctree: generated/
-
-   pca.PCA
-   pca.pca
-
 
 .. _numdiff:
 

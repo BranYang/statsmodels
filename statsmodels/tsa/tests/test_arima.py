@@ -675,9 +675,8 @@ def test_arima_predict_mle_dates():
     cpi = load_macrodata().data['cpi']
     res1 = ARIMA(cpi, (4,1,1), dates=cpi_dates, freq='Q').fit(disp=-1)
 
-    arima_forecasts = np.genfromtxt(open(
-        current_path + '/results/results_arima_forecasts_all_mle.csv', "rb"),
-                    delimiter=",", skip_header=1, dtype=float)
+    with open(current_path + '/results/results_arima_forecasts_all_mle.csv', "rb") as test_data:
+        arima_forecasts = np.genfromtxt(test_data, delimiter=",", skip_header=1, dtype=float)
 
     fc = arima_forecasts[:,0]
     fcdyn = arima_forecasts[:,1]
@@ -734,9 +733,8 @@ def test_arima_predict_css_dates():
                        -0.118203728504945,
                        -0.938783134717947])
 
-    arima_forecasts = np.genfromtxt(open(
-        current_path + '/results/results_arima_forecasts_all_css.csv', "rb"),
-                    delimiter=",", skip_header=1, dtype=float)
+    with open(current_path + '/results/results_arima_forecasts_all_css.csv', "rb") as test_data:
+        arima_forecasts = np.genfromtxt(test_data, delimiter=",", skip_header=1, dtype=float)
 
     fc = arima_forecasts[:,0]
     fcdyn = arima_forecasts[:,1]
@@ -775,10 +773,8 @@ def test_arima_predict_mle():
     cpi = load_macrodata().data['cpi']
     res1 = ARIMA(cpi, (4,1,1)).fit(disp=-1)
     # fit the model so that we get correct endog length but use
-
-    arima_forecasts = np.genfromtxt(open(
-        current_path + '/results/results_arima_forecasts_all_mle.csv', "rb"),
-                    delimiter=",", skip_header=1, dtype=float)
+    with open(current_path + '/results/results_arima_forecasts_all_mle.csv', "rb") as test_data:
+        arima_forecasts = np.genfromtxt(test_data, delimiter=",", skip_header=1, dtype=float)
     fc = arima_forecasts[:,0]
     fcdyn = arima_forecasts[:,1]
     fcdyn2 = arima_forecasts[:,2]
@@ -1158,9 +1154,8 @@ def test_arima_predict_css():
                       -0.118203728504945,
                       -0.938783134717947])
 
-    arima_forecasts = np.genfromtxt(open(
-        current_path + '/results/results_arima_forecasts_all_css.csv', "rb"),
-                    delimiter=",", skip_header=1, dtype=float)
+    with open(current_path + '/results/results_arima_forecasts_all_css.csv', "rb") as test_data:
+        arima_forecasts = np.genfromtxt(test_data, delimiter=",", skip_header=1, dtype=float)
     fc = arima_forecasts[:,0]
     fcdyn = arima_forecasts[:,1]
     fcdyn2 = arima_forecasts[:,2]
@@ -1300,11 +1295,8 @@ def test_arima_predict_css_diffs():
     # we report mean, should we report constant?
     params[0] = params[0] / (1 - params[1:5].sum())
 
-
-    arima_forecasts = np.genfromtxt(open(
-        current_path + '/results/results_arima_forecasts_all_css_diff.csv',
-                        "rb"),
-                    delimiter=",", skip_header=1, dtype=float)
+    with open(current_path + '/results/results_arima_forecasts_all_css_diff.csv', "rb") as test_data:
+        arima_forecasts = np.genfromtxt(test_data, delimiter=",", skip_header=1, dtype=float)
     fc = arima_forecasts[:,0]
     fcdyn = arima_forecasts[:,1]
     fcdyn2 = arima_forecasts[:,2]
@@ -1441,10 +1433,8 @@ def test_arima_predict_mle_diffs():
         0.113624958031799,
         0.939144026934634])
 
-    arima_forecasts = np.genfromtxt(open(
-        current_path + '/results/results_arima_forecasts_all_mle_diff.csv',
-                        "rb"),
-                    delimiter=",", skip_header=1, dtype=float)
+    with open(current_path + '/results/results_arima_forecasts_all_mle_diff.csv', "rb") as test_data:
+        arima_forecasts = np.genfromtxt(test_data, delimiter=",", skip_header=1, dtype=float)
     fc = arima_forecasts[:,0]
     fcdyn = arima_forecasts[:,1]
     fcdyn2 = arima_forecasts[:,2]
@@ -2009,7 +1999,7 @@ def test_arima_dates_startatend():
 
 
 def test_arma_missing():
-    from statsmodels.base.data import MissingDataError
+    from statsmodels.tools.sm_exceptions import MissingDataError
     # bug 1343
     y = np.random.random(40)
     y[-1] = np.nan
@@ -2243,10 +2233,28 @@ def test_arima_fit_mutliple_calls():
     y = [-1214.360173, -1848.209905, -2100.918158, -3647.483678, -4711.186773]
     mod = ARIMA(y, (1, 0, 2))
     # Make multiple calls to fit
-    mod.fit(disp=0, start_params=[np.mean(y), .1, .1, .1])
+    with warnings.catch_warnings(record=True) as w:
+        mod.fit(disp=0, start_params=[np.mean(y), .1, .1, .1])
     assert_equal(mod.exog_names,  ['const', 'ar.L1.y', 'ma.L1.y', 'ma.L2.y'])
-    mod.fit(disp=0, start_params=[np.mean(y), .1, .1, .1])
+    with warnings.catch_warnings(record=True) as w:
+        mod.fit(disp=0, start_params=[np.mean(y), .1, .1, .1])
     assert_equal(mod.exog_names,  ['const', 'ar.L1.y', 'ma.L1.y', 'ma.L2.y'])
+
+def test_long_ar_start_params():
+    np.random.seed(12345)
+    arparams = np.array([1, -.75, .25])
+    maparams = np.array([1, .65, .35])
+
+    nobs = 30
+
+    y = arma_generate_sample(arparams, maparams, nobs)
+
+    model = ARMA(y, order=(2, 2))
+
+    res = model.fit(method='css',start_ar_lags=10, disp=0)
+    res = model.fit(method='css-mle',start_ar_lags=10, disp=0)
+    res = model.fit(method='mle',start_ar_lags=10, disp=0)
+    assert_raises(ValueError, model.fit, start_ar_lags=nobs+5, disp=0)
 
 if __name__ == "__main__":
     import nose

@@ -9,9 +9,11 @@ License: BSD-3
 from statsmodels.compat.python import lzip, range
 import numpy as np
 from scipy import stats, optimize
+from sys import float_info
 
 from statsmodels.stats.base import AllPairsResults
-#import statsmodels.stats.multitest as smt
+from statsmodels.tools.sm_exceptions import HypothesisTestWarning
+
 
 def proportion_confint(count, nobs, alpha=0.05, method='normal'):
     '''confidence interval for a binomial proportion
@@ -77,20 +79,15 @@ def proportion_confint(count, nobs, alpha=0.05, method='normal'):
     elif method == 'binom_test':
         # inverting the binomial test
         def func(qi):
-            #return stats.binom_test(qi * nobs, nobs, p=q_) - alpha #/ 2.
             return stats.binom_test(q_ * nobs, nobs, p=qi) - alpha
-        # Note: only approximate, step function at integer values of count
-        # possible problems if bounds are too narrow
-        # problem if we hit 0 or 1
-        #    brentq fails ValueError: f(a) and f(b) must have different signs
-        ci_low = optimize.brentq(func, q_ * 0.1, q_)
-        #ci_low = stats.binom_test(qi_low * nobs, nobs, p=q_)
-        #ci_low = np.floor(qi_low * nobs) / nobs
-        ub = np.minimum(q_ + 2 * (q_ - ci_low), 1)
-        ci_upp = optimize.brentq(func, q_, ub)
-        #ci_upp = stats.binom_test(qi_upp * nobs, nobs, p=q_)
-        #ci_upp = np.ceil(qi_upp * nobs) / nobs
-        # TODO: check if we should round up or down, or interpolate
+        if count == 0:
+            ci_low = 0
+        else:
+            ci_low = optimize.brentq(func, float_info.min, q_)
+        if count == nobs:
+            ci_upp = 1
+        else:
+            ci_upp = optimize.brentq(func, q_, 1. - float_info.epsilon)
 
     elif method == 'beta':
         ci_low = stats.beta.ppf(alpha_2 , count, nobs - count + 1)
@@ -186,9 +183,10 @@ def proportion_effectsize(prop1, prop2, method='normal'):
 
     Examples
     --------
-    >>> smpr.proportion_effectsize(0.5, 0.4)
+    >>> import statsmodels.api as sm
+    >>> sm.stats.proportion_effectsize(0.5, 0.4)
     0.20135792079033088
-    >>> smpr.proportion_effectsize([0.3, 0.4, 0.5], 0.4)
+    >>> sm.stats.proportion_effectsize([0.3, 0.4, 0.5], 0.4)
     array([-0.21015893,  0.        ,  0.20135792])
 
     '''
@@ -249,7 +247,7 @@ def _power_ztost(mean_low, var_low, mean_upp, var_upp, mean_alt, var_alt,
     #print mean_upp, np.sqrt(var_upp), crit, var_upp
     if np.any(k_low > k_upp):   #vectorize
         import warnings
-        warnings.warn("no overlap, power is zero", UserWarning)
+        warnings.warn("no overlap, power is zero", HypothesisTestWarning)
     std_alt = np.sqrt(var_alt)
     z_low = (k_low - mean_alt - continuity[0] * 0.5 / nobs) / std_alt
     z_upp = (k_upp - mean_alt + continuity[1] * 0.5 / nobs) / std_alt
@@ -517,7 +515,8 @@ def _table_proportion(count, nobs):
 
 def proportions_ztest(count, nobs, value=None, alternative='two-sided',
                       prop_var=False):
-    '''test for proportions based on normal (z) test
+    """
+    Test for proportions based on normal (z) test
 
     Parameters
     ----------
@@ -525,14 +524,15 @@ def proportions_ztest(count, nobs, value=None, alternative='two-sided',
         the number of successes in nobs trials. If this is array_like, then
         the assumption is that this represents the number of successes for
         each independent sample
-    nobs : integer
+    nobs : integer or array-like
         the number of trials or observations, with the same length as
         count.
-    value : None or float or array_like
+    value : float, array_like or None, optional
         This is the value of the null hypothesis equal to the proportion in the
         case of a one sample test. In the case of a two-sample test, the
         null hypothesis is that prop[0] - prop[1] = value, where prop is the
-        proportion in the two samples
+        proportion in the two samples. If not provided value = 0 and the null
+        is prop[0] = prop[1]
     alternative : string in ['two-sided', 'smaller', 'larger']
         The alternative hypothesis can be either two-sided or one of the one-
         sided tests, smaller means that the alternative hypothesis is
@@ -544,7 +544,6 @@ def proportions_ztest(count, nobs, value=None, alternative='two-sided',
         can be specified to calculate this variance. Common use case is to
         use the proportion under the Null hypothesis to specify the variance
         of the proportion estimate.
-        TODO: change options similar to propotion_ztost ?
 
     Returns
     -------
@@ -553,24 +552,50 @@ def proportions_ztest(count, nobs, value=None, alternative='two-sided',
     p-value : float
         p-value for the z-test
 
+    Examples
+    --------
+    >>> count = 5
+    >>> nobs = 83
+    >>> value = .05
+    >>> stat, pval = proportions_ztest(count, nobs, value)
+    >>> print('{0:0.3f}'.format(pval))
+    0.695
+
+    >>> import numpy as np
+    >>> from statsmodels.stats.proportion import proportions_ztest
+    >>> count = np.array([5, 12])
+    >>> nobs = np.array([83, 99])
+    >>> stat, pval = proportions_ztest(counts, nobs)
+    >>> print('{0:0.3f}'.format(pval))
+    0.159
 
     Notes
     -----
     This uses a simple normal test for proportions. It should be the same as
-    running the mean z-test on the data encoded 1 for event and 0 for no event,
-    so that the sum corresponds to count.
+    running the mean z-test on the data encoded 1 for event and 0 for no event
+    so that the sum corresponds to the count.
 
     In the one and two sample cases with two-sided alternative, this test
     produces the same p-value as ``proportions_chisquare``, since the
     chisquare is the distribution of the square of a standard normal
     distribution.
-    (TODO: verify that this really holds)
+    """
+    # TODO: verify that this really holds
+    # TODO: add continuity correction or other improvements for small samples
+    # TODO: change options similar to propotion_ztost ?
 
-    TODO: add continuity correction or other improvements for small samples.
+    count = np.asarray(count)
+    nobs = np.asarray(nobs)
+    
+    if nobs.size == 1:
+        nobs = nobs * np.ones_like(count)
 
-    '''
     prop = count * 1. / nobs
     k_sample = np.size(prop)
+    if value is None:
+        if k_sample == 1:
+            raise ValueError('value must be provided for a 1-sample test')
+        value = 0
     if k_sample == 1:
         diff = prop - value
     elif k_sample == 2:

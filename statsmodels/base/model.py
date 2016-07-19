@@ -3,11 +3,13 @@ from statsmodels.compat.python import iterkeys, lzip, range, reduce
 import numpy as np
 from scipy import stats
 from statsmodels.base.data import handle_data
+from statsmodels.tools.data import _is_using_pandas
 from statsmodels.tools.tools import recipr, nan_dot
 from statsmodels.stats.contrast import ContrastResults, WaldTestResults
 from statsmodels.tools.decorators import resettable_cache, cache_readonly
 import statsmodels.base.wrapper as wrap
 from statsmodels.tools.numdiff import approx_fprime
+from statsmodels.tools.sm_exceptions import ValueWarning
 from statsmodels.formula import handle_formula_data
 from statsmodels.compat.numpy import np_matrix_rank
 from statsmodels.base.optimizer import Optimizer
@@ -95,7 +97,7 @@ class Model(object):
         return data
 
     @classmethod
-    def from_formula(cls, formula, data, subset=None, *args, **kwargs):
+    def from_formula(cls, formula, data, subset=None, drop_cols=None, *args, **kwargs):
         """
         Create a Model from a formula and dataframe.
 
@@ -109,6 +111,9 @@ class Model(object):
             An array-like object of booleans, integers, or index values that
             indicate the subset of df to use in the model. Assumes df is a
             `pandas.DataFrame`
+        drop_cols : array-like
+            Columns to drop from the design matrix.  Cannot be used to
+            drop terms involving categoricals.
         args : extra arguments
             These are passed to the model
         kwargs : extra keyword arguments
@@ -118,7 +123,6 @@ class Model(object):
             indicating the depth of the namespace to use. For example, the
             default ``eval_env=0`` uses the calling namespace. If you wish
             to use a "clean" environment set ``eval_env=-1``.
-
 
         Returns
         -------
@@ -143,12 +147,24 @@ class Model(object):
         else:
             eval_env += 1  # we're going down the stack again
         missing = kwargs.get('missing', 'drop')
-        if missing == 'none':  # with patys it's drop or raise. let's raise.
+        if missing == 'none':  # with patsy it's drop or raise. let's raise.
             missing = 'raise'
 
         tmp = handle_formula_data(data, None, formula, depth=eval_env,
                                   missing=missing)
         ((endog, exog), missing_idx, design_info) = tmp
+
+        if drop_cols is not None and len(drop_cols) > 0:
+            cols = [x for x in exog.columns if x not in drop_cols]
+            if len(cols) < len(exog.columns):
+                exog = exog[cols]
+                cols = list(design_info.term_names)
+                for col in drop_cols:
+                    try:
+                        cols.remove(col)
+                    except ValueError:
+                        pass # OK if not present
+                design_info = design_info.builder.subset(cols).design_info
 
         kwargs.update({'missing_idx': missing_idx,
                        'missing': missing,
@@ -163,10 +179,12 @@ class Model(object):
 
     @property
     def endog_names(self):
+        """Names of endogenous variables"""
         return self.data.ynames
 
     @property
     def exog_names(self):
+        """Names of exogenous variables"""
         return self.data.xnames
 
     def fit(self):
@@ -576,9 +594,9 @@ class GenericLikelihoodModel(LikelihoodModel):
         from statsmodels.tools import tools
         if self.exog is not None:
             # assume constant
-            self.df_model = float(np_matrix_rank(self.exog) - 1)
-            self.df_resid = (float(self.exog.shape[0] -
-                             np_matrix_rank(self.exog)))
+            er = np_matrix_rank(self.exog)
+            self.df_model = float(er - 1)
+            self.df_resid = float(self.exog.shape[0] - er)
         else:
             self.df_model = np.nan
             self.df_resid = np.nan
@@ -686,7 +704,7 @@ class GenericLikelihoodModel(LikelihoodModel):
             else:
                 # I don't want to raise after we have already fit()
                 import warnings
-                warnings.warn('more exog_names than parameters', UserWarning)
+                warnings.warn('more exog_names than parameters', ValueWarning)
 
         return genericmlefit
     #fit.__doc__ += LikelihoodModel.fit.__doc__
@@ -735,10 +753,14 @@ class Results(object):
 
         Returns
         -------
-        prediction : ndarray or pandas.Series
+        prediction : ndarray, pandas.Series or pandas.DataFrame
             See self.model.predict
 
         """
+        import pandas as pd
+
+        exog_index = exog.index if _is_using_pandas(exog, None) else None
+
         if transform and hasattr(self.model, 'formula') and exog is not None:
             from patsy import dmatrix
             exog = dmatrix(self.model.data.design_info.builder,
@@ -751,7 +773,22 @@ class Results(object):
                 exog = exog[:, None]
             exog = np.atleast_2d(exog)  # needed in count model shape[1]
 
-        return self.model.predict(self.params, exog, *args, **kwargs)
+        predict_results = self.model.predict(self.params, exog, *args, **kwargs)
+
+        if exog_index is not None and not hasattr(predict_results, 'predicted_values'):
+
+            if predict_results.ndim == 1:
+                return pd.Series(predict_results, index=exog_index)
+            else:
+                return pd.DataFrame(predict_results, index=exog_index)
+
+        else:
+
+            return predict_results
+
+
+    def summary(self):
+        pass
 
 
 #TODO: public method?
@@ -1137,8 +1174,12 @@ class LikelihoodModelResults(Results):
 
         >>> T_test = results.t_test(r)
         >>> print(T_test)
-        <T contrast: effect=-1829.2025687192481, sd=455.39079425193762,
-        t=-4.0167754636411717, p=0.0015163772380899498, df_denom=9>
+                                     Test for Constraints
+        ==============================================================================
+                         coef    std err          t      P>|t|      [0.025      0.975]
+        ------------------------------------------------------------------------------
+        c0         -1829.2026    455.391     -4.017      0.003   -2859.368    -799.037
+        ==============================================================================
         >>> T_test.effect
         -1829.2025687192481
         >>> T_test.sd
@@ -1157,6 +1198,14 @@ class LikelihoodModelResults(Results):
         >>> hypotheses = 'GNPDEFL = GNP, UNEMP = 2, YEAR/1829 = 1'
         >>> t_test = results.t_test(hypotheses)
         >>> print(t_test)
+                                     Test for Constraints
+        ==============================================================================
+                         coef    std err          t      P>|t|      [0.025      0.975]
+        ------------------------------------------------------------------------------
+        c0            15.0977     84.937      0.178      0.863    -177.042     207.238
+        c1            -2.0202      0.488     -8.231      0.000      -3.125      -0.915
+        c2             1.0001      0.249      0.000      1.000       0.437       1.563
+        ==============================================================================
 
         See Also
         ---------
@@ -1259,8 +1308,7 @@ class LikelihoodModelResults(Results):
         significantly different from zero.
 
         >>> print(results.f_test(A))
-        <F contrast: F=330.28533923463488, p=4.98403052872e-10,
-         df_denom=9, df_num=6>
+        <F test: F=array([[ 330.28533923]]), p=4.984030528700946e-10, df_denom=9, df_num=6>
 
         Compare this to
 
@@ -1276,8 +1324,7 @@ class LikelihoodModelResults(Results):
         are equal.
 
         >>> print(results.f_test(B))
-        <F contrast: F=9.740461873303655, p=0.00560528853174, df_denom=9,
-         df_num=2>
+        <F test: F=array([[ 9.74046187]]), p=0.005605288531708235, df_denom=9, df_num=2>
 
         Alternatively, you can specify the hypothesis tests using a string
 
@@ -1289,6 +1336,7 @@ class LikelihoodModelResults(Results):
         >>> hypotheses = '(GNPDEFL = GNP), (UNEMP = 2), (YEAR/1829 = 1)'
         >>> f_test = results.f_test(hypotheses)
         >>> print(f_test)
+        <F test: F=array([[ 144.17976065]]), p=6.322026217355609e-08, df_denom=9, df_num=3>
 
         See Also
         --------
@@ -1446,8 +1494,7 @@ class LikelihoodModelResults(Results):
 
         Examples
         --------
-        >>> res_ols = ols("np.log(Days+1) ~ C(Duration, Sum)*C(Weight, Sum)",
-                          data).fit()
+        >>> res_ols = ols("np.log(Days+1) ~ C(Duration, Sum)*C(Weight, Sum)", data).fit()
         >>> res_ols.wald_test_terms()
         <class 'statsmodels.stats.contrast.WaldTestResults'>
                                                   F                P>F  df constraint  df denom
@@ -1689,10 +1736,20 @@ class LikelihoodModelResults(Results):
         Not fully tested for time series models, tsa, and might delete too much
         for prediction or not all that would be possible.
 
-        The list of arrays to delete is maintained as an attribute of the
-        result and model instance, except for cached values. These lists could
-        be changed before calling remove_data.
+        The lists of arrays to delete are maintained as attributes of
+        the result and model instance, except for cached values. These
+        lists could be changed before calling remove_data.
 
+        The attributes to remove are named in:
+
+        model._data_attr : arrays attached to both the model instance
+            and the results instance with the same attribute name.
+
+        result.data_in_cache : arrays that may exist as values in
+            result._cache (TODO : should privatize name)
+
+        result._data_attr_model : arrays attached to the model
+            instance but not to the results instance
         '''
         def wipe(obj, att):
             #get to last element in attribute path
@@ -1709,8 +1766,9 @@ class LikelihoodModelResults(Results):
             except AttributeError:
                 pass
 
+        model_only = ['model.' + i for i in getattr(self, "_data_attr_model", [])]
         model_attr = ['model.' + i for i in self.model._data_attr]
-        for att in self._data_attr + model_attr:
+        for att in self._data_attr + model_attr + model_only:
             #print('removing', att)
             wipe(self, att)
 

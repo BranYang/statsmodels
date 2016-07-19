@@ -1,21 +1,26 @@
 """
 Statistical tools for time series analysis
 """
-from statsmodels.compat.python import (iteritems, range, lrange, string_types, lzip,
-                                zip, map)
+from statsmodels.compat.python import (iteritems, range, lrange, string_types,
+                                       lzip, zip, long)
+from statsmodels.compat.scipy import _next_regular
+
 import numpy as np
 from numpy.linalg import LinAlgError
 from scipy import stats
+
 from statsmodels.regression.linear_model import OLS, yule_walker
 from statsmodels.tools.tools import add_constant, Bunch
-from .tsatools import lagmat, lagmat2ds, add_trend
-from .adfvalues import mackinnonp, mackinnoncrit
+from statsmodels.tsa.tsatools import lagmat, lagmat2ds, add_trend
+from statsmodels.tsa.adfvalues import mackinnonp, mackinnoncrit
+from statsmodels.tsa._bds import bds
 from statsmodels.tsa.arima_model import ARMA
-from statsmodels.compat.scipy import _next_regular
+from statsmodels.tools.sm_exceptions import InterpolationWarning, MissingDataError
+
 
 __all__ = ['acovf', 'acf', 'pacf', 'pacf_yw', 'pacf_ols', 'ccovf', 'ccf',
            'periodogram', 'q_stat', 'coint', 'arma_order_select_ic',
-           'adfuller', 'kpss']
+           'adfuller', 'kpss', 'bds']
 
 
 #NOTE: now in two places to avoid circular import
@@ -195,7 +200,7 @@ def adfuller(x, maxlag=None, regression="c", autolag='AIC',
         store = True
 
     trenddict = {None: 'nc', 0: 'c', 1: 'ct', 2: 'ctt'}
-    if regression is None or isinstance(regression, int):
+    if regression is None or isinstance(regression, (int, long)):
         regression = trenddict[regression]
     regression = regression.lower()
     if regression not in ['c', 'nc', 'ct', 'ctt']:
@@ -275,6 +280,7 @@ def adfuller(x, maxlag=None, regression="c", autolag='AIC',
                        "unit root")
         resstore.HA = "The coefficient on the lagged level < 1 - stationary"
         resstore.icbest = icbest
+        resstore._str = 'Augmented Dickey-Fuller Test Results'
         return adfstat, pvalue, critvalues, resstore
     else:
         if not autolag:
@@ -283,8 +289,8 @@ def adfuller(x, maxlag=None, regression="c", autolag='AIC',
             return adfstat, pvalue, usedlag, nobs, critvalues, icbest
 
 
-def acovf(x, unbiased=False, demean=True, fft=False):
-    '''
+def acovf(x, unbiased=False, demean=True, fft=False, missing='none'):
+    """
     Autocovariance for 1D
 
     Parameters
@@ -298,33 +304,78 @@ def acovf(x, unbiased=False, demean=True, fft=False):
     fft : bool
         If True, use FFT convolution.  This method should be preferred
         for long time series.
-
+    missing : str
+        A string in ['none', 'raise', 'conservative', 'drop'] specifying how the NaNs
+        are to be treated.
+        
     Returns
     -------
     acovf : array
         autocovariance function
-    '''
+
+    References
+    -----------
+    .. [1] Parzen, E., 1963. On spectral analysis with missing observations
+           and amplitude modulation. Sankhya: The Indian Journal of
+           Statistics, Series A, pp.383-392.
+    """
     x = np.squeeze(np.asarray(x))
     if x.ndim > 1:
         raise ValueError("x must be 1d. Got %d dims." % x.ndim)
-    n = len(x)
 
-    if demean:
+    missing = missing.lower()
+    if missing not in ['none', 'raise', 'conservative', 'drop']:
+        raise ValueError("missing option %s not understood" % missing)
+    if missing == 'none':
+        deal_with_masked = False
+    else:
+        deal_with_masked = has_missing(x)
+    if deal_with_masked:
+        if missing == 'raise': 
+            raise MissingDataError("NaNs were encountered in the data")
+        notmask_bool = ~np.isnan(x) #bool
+        if missing == 'conservative':
+            x[~notmask_bool] = 0
+        else: #'drop'
+            x = x[notmask_bool] #copies non-missing
+        notmask_int = notmask_bool.astype(int) #int
+
+    if demean and deal_with_masked:
+        # whether 'drop' or 'conservative':
+        xo = x - x.sum()/notmask_int.sum()
+        if missing=='conservative':
+            xo[~notmask_bool] = 0
+    elif demean:
         xo = x - x.mean()
     else:
         xo = x
-    if unbiased:
+
+    n = len(x)
+    if unbiased and deal_with_masked and missing=='conservative':
+        d = np.correlate(notmask_int, notmask_int, 'full')
+    elif unbiased:
         xi = np.arange(1, n + 1)
         d = np.hstack((xi, xi[:-1][::-1]))
-    else:
+    elif deal_with_masked: #biased and NaNs given and ('drop' or 'conservative')
+        d = notmask_int.sum() * np.ones(2*n-1)
+    else: #biased and no NaNs or missing=='none' 
         d = n * np.ones(2 * n - 1)
+
     if fft:
         nobs = len(xo)
-        Frf = np.fft.fft(xo, n=nobs * 2)
-        acov = np.fft.ifft(Frf * np.conjugate(Frf))[:nobs] / d[n - 1:]
-        return acov.real
+        n = _next_regular(2 * nobs + 1)
+        Frf = np.fft.fft(xo, n=n)
+        acov = np.fft.ifft(Frf * np.conjugate(Frf))[:nobs] / d[nobs - 1:]
+        acov = acov.real
     else:
-        return (np.correlate(xo, xo, 'full') / d)[n - 1:]
+        acov = (np.correlate(xo, xo, 'full') / d)[n - 1:]
+
+    if deal_with_masked and missing=='conservative':
+        # restore data for the user
+        x[~notmask_bool] = np.nan
+
+    return acov
+
 
 
 def q_stat(x, nobs, type="ljungbox"):
@@ -359,8 +410,9 @@ def q_stat(x, nobs, type="ljungbox"):
 #NOTE: Changed unbiased to False
 #see for example
 # http://www.itl.nist.gov/div898/handbook/eda/section3/autocopl.htm
-def acf(x, unbiased=False, nlags=40, qstat=False, fft=False, alpha=None):
-    '''
+def acf(x, unbiased=False, nlags=40, qstat=False, fft=False, alpha=None,
+        missing='none'):
+    """
     Autocorrelation function for 1d arrays.
 
     Parameters
@@ -381,6 +433,9 @@ def acf(x, unbiased=False, nlags=40, qstat=False, fft=False, alpha=None):
         returned. For instance if alpha=.05, 95 % confidence intervals are
         returned where the standard deviation is computed according to
         Bartlett\'s formula.
+    missing : str, optional
+        A string in ['none', 'raise', 'conservative', 'drop'] specifying how the NaNs
+        are to be treated.
 
     Returns
     -------
@@ -403,27 +458,17 @@ def acf(x, unbiased=False, nlags=40, qstat=False, fft=False, alpha=None):
 
     If unbiased is true, the denominator for the autocovariance is adjusted
     but the autocorrelation is not an unbiased estimtor.
-    '''
-    nobs = len(x)
-    d = nobs  # changes if unbiased
-    if not fft:
-        avf = acovf(x, unbiased=unbiased, demean=True)
-        #acf = np.take(avf/avf[0], range(1,nlags+1))
-        acf = avf[:nlags + 1] / avf[0]
-    else:
-        x = np.squeeze(np.asarray(x))
-        #JP: move to acovf
-        x0 = x - x.mean()
-        # ensure that we always use a power of 2 or 3 for zero-padding,
-        # this way we'll ensure O(n log n) runtime of the fft.
-        n = _next_regular(2 * nobs + 1)
-        Frf = np.fft.fft(x0, n=n)  # zero-pad for separability
-        if unbiased:
-            d = nobs - np.arange(nobs)
-        acf = np.fft.ifft(Frf * np.conjugate(Frf))[:nobs] / d
-        acf /= acf[0]
-        #acf = np.take(np.real(acf), range(1,nlags+1))
-        acf = np.real(acf[:nlags + 1])   # keep lag 0
+
+    References
+    ----------
+    .. [1] Parzen, E., 1963. On spectral analysis with missing observations
+       and amplitude modulation. Sankhya: The Indian Journal of
+       Statistics, Series A, pp.383-392.
+
+    """
+    nobs = len(x)  # should this shrink for missing='drop' and NaNs in x?
+    avf = acovf(x, unbiased=unbiased, demean=True, fft=fft, missing=missing)
+    acf = avf[:nlags + 1] / avf[0]
     if not (qstat or alpha):
         return acf
     if alpha is not None:
@@ -918,7 +963,7 @@ def coint(y1, y2, regression="c"):
     """
     regression = regression.lower()
     if regression not in ['c', 'nc', 'ct', 'ctt']:
-        raise ValueError("regression option %s not understood") % regression
+        raise ValueError("regression option %s not understood" % regression)
     y1 = np.asarray(y1)
     y2 = np.asarray(y2)
     if regression == 'c':
@@ -946,8 +991,7 @@ def _safe_arma_fit(y, order, model_kw, trend, fit_kw, start_params=None):
             # user supplied start_params only get one chance
             return
         # try a little harder, should be handled in fit really
-        elif ((hasattr(error, 'message') and 'initial' not in error.message)
-              or 'initial' in str(error)):  # py2 and py3
+        elif ('initial' not in error.args[0] or 'initial' in str(error)):
             start_params = [.1] * sum(order)
             if trend == 'c':
                 start_params = [.1] + start_params
@@ -1054,6 +1098,12 @@ def arma_order_select_ic(y, max_ar=4, max_ma=2, ic='bic', trend='c',
 
     return Bunch(**res)
 
+def has_missing(data):
+    """
+    Returns True if 'data' contains missing entries, otherwise False
+    """
+    return np.isnan(np.sum(data))
+
 
 def kpss(x, regression='c', lags=None, store=False):
     """
@@ -1150,9 +1200,9 @@ def kpss(x, regression='c', lags=None, store=False):
     p_value = np.interp(kpss_stat, crit, pvals)
 
     if p_value == pvals[-1]:
-        warn("p-value is smaller than the indicated p-value")
+        warn("p-value is smaller than the indicated p-value", InterpolationWarning)
     elif p_value == pvals[0]:
-        warn("p-value is greater than the indicated p-value")
+        warn("p-value is greater than the indicated p-value", InterpolationWarning)
 
     crit_dict = {'10%': crit[0], '5%': crit[1], '2.5%': crit[2], '1%': crit[3]}
 
@@ -1180,30 +1230,3 @@ def _sigma_est_kpss(resids, nobs, lags):
         resids_prod = np.dot(resids[i:], resids[:nobs - i])
         s_hat += 2 * resids_prod * (1. - (i / (lags + 1.)))
     return s_hat / nobs
-
-
-
-if __name__ == "__main__":
-    import statsmodels.api as sm
-    data = sm.datasets.macrodata.load().data
-    x = data['realgdp']
-# adf is tested now.
-    adf = adfuller(x, 4, autolag=None)
-    adfbic = adfuller(x, autolag="bic")
-    adfaic = adfuller(x, autolag="aic")
-    adftstat = adfuller(x, autolag="t-stat")
-
-# acf is tested now
-#    acf1, ci1, Q, pvalue = acf(x, nlags=40, confint=95, qstat=True)
-#    acf2, ci2, Q2, pvalue2 = acf(x, nlags=40, confint=95, fft=True, qstat=True)
-#    acf3, ci3, Q3, pvalue3 = acf(x, nlags=40, confint=95, qstat=True,
-#                                 unbiased=True)
-#    acf4, ci4, Q4, pvalue4 = acf(x, nlags=40, confint=95, fft=True, qstat=True,
-#                                 unbiased=True)
-
-# pacf is tested now
-#    pacf1 = pacorr(x)
-#    pacfols = pacf_ols(x, nlags=40)
-#    pacfyw = pacf_yw(x, nlags=40, method="mle")
-    y = np.random.normal(size=(100, 2))
-    grangercausalitytests(y, 2)

@@ -4,30 +4,35 @@ from scipy.stats.distributions import chi2, norm
 from statsmodels.graphics import utils
 
 
-def _calc_survfunc_right(time, status):
+def _calc_survfunc_right(time, status, weights=None, compress=True,
+                         retall=True):
     """
     Calculate the survival function and its standard error for a single
     group.
     """
 
-    time = np.asarray(time)
-    status = np.asarray(status)
-
     # Convert the unique times to ranks (0, 1, 2, ...)
-    time, rtime = np.unique(time, return_inverse=True)
+    utime, rtime = np.unique(time, return_inverse=True)
 
     # Number of deaths at each unique time.
-    d = np.bincount(rtime, weights=status)
+    if weights is None:
+        d = np.bincount(rtime, weights=status)
+    else:
+        d = np.bincount(rtime, weights=status*weights)
 
     # Size of risk set just prior to each event time.
-    n = np.bincount(rtime)
+    if weights is None:
+        n = np.bincount(rtime)
+    else:
+        n = np.bincount(rtime, weights=weights)
     n = np.cumsum(n[::-1])[::-1]
 
     # Only retain times where an event occured.
-    ii = np.flatnonzero(d > 0)
-    d = d[ii]
-    n = n[ii]
-    time = time[ii]
+    if compress:
+        ii = np.flatnonzero(d > 0)
+        d = d[ii]
+        n = n[ii]
+        utime = utime[ii]
 
     # The survival function probabilities.
     sp = 1 - d / n.astype(np.float64)
@@ -35,20 +40,157 @@ def _calc_survfunc_right(time, status):
     sp = np.cumsum(sp)
     sp = np.exp(sp)
 
-    # Standard errors (Greenwood's formula).
-    se = d / (n * (n - d)).astype(np.float64)
-    se = np.cumsum(se)
-    se = np.sqrt(se)
-    se *= sp
+    if not retall:
+        return sp, utime, rtime, n, d
 
-    return sp, se, time, n, d
+    # Standard errors
+    if weights is None:
+        # Greenwood's formula
+        se = d / (n * (n - d)).astype(np.float64)
+        se = np.cumsum(se)
+        se = np.sqrt(se)
+        se *= sp
+    else:
+        # Tsiatis' (1981) formula
+        se = d / (n * n).astype(np.float64)
+        se = np.cumsum(se)
+        se = np.sqrt(se)
+
+    return sp, se, utime, rtime, n, d
+
+
+def _calc_incidence_right(time, status, weights=None):
+    """
+    Calculate the cumulative incidence function and its standard error.
+    """
+
+    # Calculate the all-cause survival function.
+    status0 = (status >= 1).astype(np.float64)
+    sp, utime, rtime, n, d = _calc_survfunc_right(time, status0, weights,
+                                                  compress=False, retall=False)
+
+    ngrp = status.max()
+
+    # Number of cause-specific deaths at each unique time.
+    d = []
+    for k in range(ngrp):
+        status0 = (status == k + 1).astype(np.float64)
+        if weights is None:
+            d0 = np.bincount(rtime, weights=status0, minlength=len(utime))
+        else:
+            d0 = np.bincount(rtime, weights=status0*weights,
+                             minlength=len(utime))
+        d.append(d0)
+
+    # The cumulative incidence function probabilities.
+    ip = []
+    sp0 = np.r_[1, sp[:-1]] / n
+    for k in range(ngrp):
+        ip0 = np.cumsum(sp0 * d[k])
+        ip.append(ip0)
+
+    # The standard error of the cumulative incidence function.
+    if weights is not None:
+        return ip, None, utime
+    se = []
+    da = sum(d)
+    for k in range(ngrp):
+
+        ra = da / (n * (n - da))
+        v = ip[k]**2 * np.cumsum(ra)
+        v -= 2 * ip[k] * np.cumsum(ip[k] * ra)
+        v += np.cumsum(ip[k]**2 * ra)
+
+        ra = (n - d[k]) * d[k] / n
+        v += np.cumsum(sp0**2 * ra)
+
+        ra = sp0 * d[k] / n
+        v -= 2 * ip[k] * np.cumsum(ra)
+        v += 2 * np.cumsum(ip[k] * ra)
+
+        se.append(np.sqrt(v))
+
+    return ip, se, utime
+
+
+def _checkargs(time, status, freq_weights):
+
+    if len(time) != len(status):
+        raise ValueError("time and status must have the same length")
+
+    if freq_weights is not None and (len(freq_weights) != len(time)):
+        raise ValueError("weights, time and status must have the same length")
+
+
+class CumIncidenceRight(object):
+    """
+    Estimation and inference for a cumulative incidence function.
+
+    If J = 1, 2, ... indicates the event type, the cumulative
+    incidence function for cause j is:
+
+    I(t, j) = P(T <= t and J=j)
+
+    Only right censoring is supported.  If frequency weights are provided,
+    the point estimate is returned without a standard error.
+
+    Parameters
+    ----------
+    time : array-like
+        An array of times (censoring times or event times)
+    status : array-like
+        If status >= 1 indicates which event occured at time t.  If
+        status = 0, the subject was censored at time t.
+    title : string
+        Optional title used for plots and summary output.
+    freq_weights : array-like
+        Optional frequency weights
+
+    Attributes
+    ----------
+    times : array-like
+        The distinct times at which the incidence rates are estimated
+    cinc : list of arrays
+        cinc[k-1] contains the estimated cumulative incidence rates
+        for outcome k=1,2,...
+    cinc_se : list of arrays
+        The standard errors for the values in `cinc`.
+
+    References
+    ----------
+    The Stata stcompet procedure:
+        http://www.stata-journal.com/sjpdf.html?articlenum=st0059
+
+    Dinse, G. E. and M. G. Larson. 1986. A note on semi-Markov models
+    for partially censored data. Biometrika 73: 379-386.
+
+    Marubini, E. and M. G. Valsecchi. 1995. Analysing Survival Data
+    from Clinical Trials and Observational Studies. Chichester, UK:
+    John Wiley & Sons.
+    """
+
+    def __init__(self, time, status, title=None, freq_weights=None):
+
+        _checkargs(time, status, freq_weights)
+        time = self.time = np.asarray(time)
+        status = self.status = np.asarray(status)
+        if freq_weights is not None:
+            freq_weights = self.freq_weights = np.asarray(freq_weights)
+        x = _calc_incidence_right(time, status, freq_weights)
+        self.cinc = x[0]
+        self.cinc_se = x[1]
+        self.times = x[2]
+        self.title = "" if not title else title
 
 
 class SurvfuncRight(object):
     """
     Estimation and inference for a survival function.
 
-    Only right censoring is supported.
+    The survival function S(t) = P(T > t) is the probability that an
+    event time T is greater than t.
+
+    This class currently only supports right censoring.
 
     Parameters
     ----------
@@ -62,6 +204,8 @@ class SurvfuncRight(object):
         the event occurs after the given value in `time`.
     title : string
         Optional title used for plots and summary output.
+    freq_weights : array-like
+        Optional frequency weights
 
     Attributes
     ----------
@@ -80,19 +224,20 @@ class SurvfuncRight(object):
         in `surv_times`.
     """
 
-    def __init__(self, time, status, title=None):
+    def __init__(self, time, status, title=None, freq_weights=None):
 
-        self.time = np.asarray(time)
-        self.status = np.asarray(status)
-        m = len(status)
-        x = _calc_survfunc_right(time, status)
+        _checkargs(time, status, freq_weights)
+        time = self.time = np.asarray(time)
+        status = self.status = np.asarray(status)
+        if freq_weights is not None:
+            freq_weights = self.freq_weights = np.asarray(freq_weights)
+        x = _calc_survfunc_right(time, status, freq_weights)
         self.surv_prob = x[0]
         self.surv_prob_se = x[1]
         self.surv_times = x[2]
-        self.n_risk = x[3]
-        self.n_events = x[4]
+        self.n_risk = x[4]
+        self.n_events = x[5]
         self.title = "" if not title else title
-
 
     def plot(self, ax=None):
         """
@@ -102,6 +247,10 @@ class SurvfuncRight(object):
         --------
         Change the line color:
 
+        >>> import statsmodels.api as sm
+        >>> data = sm.datasets.get_rdataset("flchain", "survival").data
+        >>> df = data.loc[data.sex == "F", :]
+        >>> sf = sm.SurvfuncRight(df["futime"], df["death"])
         >>> fig = sf.plot()
         >>> ax = fig.get_axes()[0]
         >>> li = ax.get_lines()
@@ -117,7 +266,6 @@ class SurvfuncRight(object):
         """
 
         return plot_survfunc(self, ax)
-
 
     def quantile(self, p):
         """
@@ -139,7 +287,6 @@ class SurvfuncRight(object):
             return np.nan
 
         return self.surv_times[ii[0]]
-
 
     def quantile_ci(self, p, alpha=0.05, method='cloglog'):
         """
@@ -180,20 +327,20 @@ class SurvfuncRight(object):
 
         method = method.lower()
         if method == "cloglog":
-            g = lambda x : np.log(-np.log(x))
-            gprime = lambda x : -1 / (x * np.log(x))
+            g = lambda x: np.log(-np.log(x))
+            gprime = lambda x: -1 / (x * np.log(x))
         elif method == "linear":
-            g = lambda x : x
-            gprime = lambda x : 1
+            g = lambda x: x
+            gprime = lambda x: 1
         elif method == "log":
-            g = lambda x : np.log(x)
-            gprime = lambda x : 1 / x
+            g = lambda x: np.log(x)
+            gprime = lambda x: 1 / x
         elif method == "logit":
-            g = lambda x : np.log(x / (1 - x))
-            gprime = lambda x : 1 / (x * (1 - x))
+            g = lambda x: np.log(x / (1 - x))
+            gprime = lambda x: 1 / (x * (1 - x))
         elif method == "asinsqrt":
-            g = lambda x : np.arcsin(np.sqrt(x))
-            gprime = lambda x : 1 / (2 * np.sqrt(x) * np.sqrt(1 - x))
+            g = lambda x: np.arcsin(np.sqrt(x))
+            gprime = lambda x: 1 / (2 * np.sqrt(x) * np.sqrt(1 - x))
         else:
             raise ValueError("unknown method")
 
@@ -213,7 +360,6 @@ class SurvfuncRight(object):
 
         return lb, ub
 
-
     def summary(self):
         """
         Return a summary of the estimated survival function.
@@ -231,13 +377,12 @@ class SurvfuncRight(object):
 
         return df
 
-
     def simultaneous_cb(self, alpha=0.05, method="hw", transform="log"):
         """
         Returns a simultaneous confidence band for the survival function.
 
-        Arguments
-        ---------
+        Parameters
+        ----------
         alpha : float
             `1 - alpha` is the desired simultaneous coverage
             probability for the confidence region.  Currently alpha
@@ -264,7 +409,8 @@ class SurvfuncRight(object):
 
         method = method.lower()
         if method != "hw":
-            raise ValueError("only the Hall-Wellner (hw) method is implemented")
+            msg = "only the Hall-Wellner (hw) method is implemented"
+            raise ValueError(msg)
 
         if alpha != 0.05:
             raise ValueError("alpha must be set to 0.05")
@@ -291,7 +437,6 @@ class SurvfuncRight(object):
             raise ValueError("Unknown transform")
 
         return lcb, ucb
-
 
 
 def survdiff(time, status, group, weight_type=None, strata=None, **kwargs):
@@ -322,7 +467,7 @@ def survdiff(time, status, group, weight_type=None, strata=None, **kwargs):
     strata : array-like
         Optional stratum indicators for a stratified test
 
-    Returns:
+    Returns
     --------
     chisq : The chi-square (1 degree of freedom) distributed test
             statistic value
@@ -419,7 +564,8 @@ def _survdiff(time, status, group, weight_type, gr, **kwargs):
             weights = np.sqrt(n)
         elif weight_type == "fh":
             if "fh_p" not in kwargs:
-                raise ValueError("weight_type type 'fh' requires specification of fh_p")
+                msg = "weight_type type 'fh' requires specification of fh_p"
+                raise ValueError(msg)
             fh_p = kwargs["fh_p"]
             # Calculate the survivor function directly to avoid the
             # overhead of creating a SurvfuncRight object
@@ -446,13 +592,12 @@ def _survdiff(time, status, group, weight_type, gr, **kwargs):
     return obs, var
 
 
-
 def plot_survfunc(survfuncs, ax=None):
     """
     Plot one or more survivor functions.
 
-    Arguments
-    ---------
+    Parameters
+    ----------
     survfuncs : object or array-like
         A single SurvfuncRight object, or a list or SurvfuncRight
         objects that are plotted together.
@@ -465,11 +610,17 @@ def plot_survfunc(survfuncs, ax=None):
     --------
     Add a legend:
 
+    >>> import statsmodels.api as sm
+    >>> from statsmodels.duration.survfunc import plot_survfunc
+    >>> data = sm.datasets.get_rdataset("flchain", "survival").data
+    >>> df = data.loc[data.sex == "F", :]
+    >>> sf0 = sm.SurvfuncRight(df["futime"], df["death"])
+    >>> sf1 = sm.SurvfuncRight(3.0 * df["futime"], df["death"])
     >>> fig = plot_survfunc([sf0, sf1])
     >>> ax = fig.get_axes()[0]
     >>> ax.set_position([0.1, 0.1, 0.64, 0.8])
     >>> ha, lb = ax.get_legend_handles_labels()
-    >>> leg = fig.legend((ha[0], ha[2]), (lb[0], lb[2]), 'center right')
+    >>> leg = fig.legend((ha[0], ha[1]), (lb[0], lb[1]), 'center right')
 
     Change the line colors:
 
@@ -478,9 +629,7 @@ def plot_survfunc(survfuncs, ax=None):
     >>> ax.set_position([0.1, 0.1, 0.64, 0.8])
     >>> ha, lb = ax.get_legend_handles_labels()
     >>> ha[0].set_color('purple')
-    >>> ha[1].set_color('purple')
-    >>> ha[2].set_color('orange')
-    >>> ha[3].set_color('orange')
+    >>> ha[1].set_color('orange')
     """
 
     fig, ax = utils.create_mpl_ax(ax)
@@ -508,7 +657,8 @@ def plot_survfunc(survfuncs, ax=None):
 
         label = getattr(sf, "title", "Group %d" % (gx + 1))
 
-        li, = ax.step(surv_times, surv_prob, '-', label=label, lw=2, where='post')
+        li, = ax.step(surv_times, surv_prob, '-', label=label, lw=2,
+                      where='post')
 
         # Plot the censored points.
         ii = np.flatnonzero(np.logical_not(sf.status))

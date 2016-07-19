@@ -54,7 +54,7 @@ def _isdummy(X):
     >>> X[:,1:3] = np.random.randn(15,2)
     >>> ind = _isdummy(X)
     >>> ind
-    array([ True, False, False,  True,  True], dtype=bool)
+    array([0, 3, 4])
     """
     X = np.asarray(X)
     if X.ndim > 1:
@@ -93,7 +93,7 @@ def _iscount(X):
     >>> X[:,1:3] = np.random.randn(15,2)
     >>> ind = _iscount(X)
     >>> ind
-    array([ True, False, False,  True,  True], dtype=bool)
+    array([0, 3, 4])
     """
     X = np.asarray(X)
     remainder = np.logical_and(np.logical_and(np.all(X % 1. == 0, axis = 0),
@@ -519,7 +519,7 @@ class DiscreteMargins(object):
         # sigh, we really need to hold on to this in _data...
         _, const_idx = _get_const_index(model.exog)
         if const_idx is not None:
-            exog_names.pop(const_idx)
+            exog_names.pop(const_idx[0])
 
         J = int(getattr(model, "J", 1))
         if J > 1:
