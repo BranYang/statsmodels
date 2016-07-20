@@ -55,7 +55,6 @@ class BoxCox(object):
 
         if lmbda is None:
             lmbda = self._est_lambda(x,
-                                     bounds=(-1, 2),
                                      method=method,
                                      **kwargs)
 
@@ -99,7 +98,7 @@ class BoxCox(object):
             else:
                 y = np.power(lmbda * x + 1, 1. / lmbda)
         elif method == 'normal':
-            y = x  # TODO
+            y = x  # TODO: normal back transformation
         else:
             raise ValueError("Method '{0}' not understood.".format(method))
 
@@ -180,7 +179,7 @@ class BoxCox(object):
 
         scale = scale.lower()
         if scale == 'sd':
-            dispersion = np.std(grouped_data, 1)
+            dispersion = np.std(grouped_data, 1, ddof=1)
         elif scale == 'mad':
             dispersion = mad(grouped_data, axis=1)
         else:
@@ -188,7 +187,7 @@ class BoxCox(object):
 
         def optim(lmbda, *args, **kwargs):
             rat = np.divide(dispersion, np.power(mean, 1 - lmbda))  # eq 6, p 40
-            return np.std(rat) / np.mean(rat)
+            return np.std(rat, ddof=1) / np.mean(rat)
 
         res = minimize_scalar(optim,
                               bounds=bounds,
